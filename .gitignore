@@ -1,0 +1,62 @@
+# 本地 IDE 配置与 Python 虚拟环境
+.idea/
+.vscode/
+.venv/
+venv/
+
+# Python 缓存、测试缓存与构建产物
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# 全部业务数据、字典、人工修正、备份与计算结果
+# 目录规则不影响根目录 clean.py、model.py 等脚本
+/clean/
+/data/
+/model/
+/output/
+/result_initial/
+
+# 散落在其他位置的常见数据文件（扩展名大小写均匹配）
+*.[xX][lL][sS]
+*.[xX][lL][sS][xX]
+*.[xX][lL][sS][mM]
+*.[xX][lL][sS][bB]
+*.[cC][sS][vV]
+*.[tT][sS][vV]
+*.[pP][aA][rR][qQ][uU][eE][tT]
+*.[fF][eE][aA][tT][hH][eE][rR]
+*.[pP][kK][lL]
+*.[pP][iI][cC][kK][lL][eE]
+*.[nN][pP][yY]
+*.[nN][pP][zZ]
+*.[dD][bB]
+*.[sS][qQ][lL][iI][tT][eE]
+*.[sS][qQ][lL][iI][tT][eE]3
+
+# README 的导出副本；保留 README.md
+/README.html
+/README.pdf
+
+# 本地环境变量；允许提交不含凭据的示例文件
+.env
+.env.*
+!.env.example
+
+# Office 临时文件、日志及系统缓存
+~$*
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 保留：*.py、README.md、pyproject.toml、uv.lock、.gitignore
+# 数据不会随代码克隆到新电脑，需另行配置。
