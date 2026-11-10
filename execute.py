@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 # ====================== 用户配置 ======================
-MODE = '1.2'
+MODE = '2.1'
 
 # 1.1 严格方程：线性规划检查非负可行性及严格正性，再验证原始工时等式。
 # 1.2 非负最小二乘：专用线性求解器；最终值仍必须>0且>= MIN_RESULT_SECONDS 秒。
@@ -71,7 +71,7 @@ NETWORK_HIDDEN = 32
 NETWORK_PATIENCE = 100
 NETWORK_MIN_IMPROVEMENT = 1e-6
 # 3.x必须启用验证；达到训练上限且未早停，不当作训练已稳定。
-# 固定值=绿色，合格求解值=蓝色，错误/*/不适用=红色。
+# 固定值=绿色，可独立确定=蓝色，估计值=黄色，错误/*/不适用=红色。
 # 结果C列保留小时/件；D列新增秒/件=C列×3600。错误候选值只在解释报告展示。
 # ======================================================
 
@@ -543,11 +543,13 @@ def classify(fixed,active,ambiguous,fit):
                 if not np.isfinite(x):why.append('无有效候选值')
                 elif x<=0:why.append('求解错误：非正数')
                 elif x*3600<MIN_RESULT_SECONDS:why.append(f'求解错误：小于{MIN_RESULT_SECONDS:g}秒')
-                if ambiguous[j]:why.append('无法独立确定')
             accepted[j]=not why
             text=float(x) if not why else '；'.join(why)
             local+=1
-        texts.append(text);reasons.append('；'.join(why) if why else '通过当前检查，仍需业务核实')
+        texts.append(text)
+        reasons.append('；'.join(why) if why else
+                       '估计值，需复核：无法独立确定' if ambiguous[j] else
+                       '可独立确定：通过数值检查，仍需业务核实')
     return values,accepted,texts,reasons
 
 
@@ -603,13 +605,16 @@ def build_reports(data,run_id):
         fit.ok=False;fit.message+='；全矩阵严格等式未通过'
         values,accepted,texts,reasons=classify(data.fixed,active,ambiguous,fit)
     rejected=active&~accepted
-    status='求解未通过' if not fit.ok else '部分模块未通过验收' if rejected.any() else '完成'
+    estimated=active&accepted&ambiguous
+    identified=active&accepted&~ambiguous
+    status='求解未通过' if not fit.ok else '部分模块未通过验收' if rejected.any() else '试算完成，含待复核估计值' if estimated.any() else '完成'
     if MODE=='3.2' and fit.ok:status='预测对照完成；不提供固定单位工时'
     complete=bool(fit.ok and not rejected.any() and MODE!='3.2')
     log(f'[数值求解] {"通过" if fit.ok else "未通过"}；模块验收另行判断')
-    log(f'[验收] 合格求解{int((active&accepted).sum())}；未通过{int(rejected.sum())}；无业务未知模块{int((~active&~known).sum())}')
+    log(f'[结果] 可独立确定{int(identified.sum())}；估计值待复核{int(estimated.sum())}；未通过{int(rejected.sum())}；无业务{int((~active&~known).sum())}')
+    if estimated.any():log('[说明] 估计值可用于试算；总量拟合良好不代表每个模块工时准确。')
     if not fit.ok:log(f'[求解状态] {fit.message}')
-    result=[['备件模块','自变量','求解值（小时/件）','换算值（秒/件）']]+[[n,v,texts[i],seconds_cell(texts[i])] for i,(n,v) in enumerate(data.modules)]
+    result=[['备件模块','自变量','求解值（小时/件）','换算值（秒/件）','结果状态']]+[[n,v,texts[i],seconds_cell(texts[i]),reasons[i]] for i,(n,v) in enumerate(data.modules)]
     diagnostics=[['备件模块','自变量','结果状态','出现样本数','固定值(小时/件)','候选值(小时/件)',
                   '候选值(秒/件)','有效重采样次数','经验下界(小时/件)','经验上界(小时/件)','补充说明']]
     idx=0
@@ -622,7 +627,7 @@ def build_reports(data,run_id):
         if known[j] and not np.any(data.A[:,j]):note+='；本期无业务，保留固定值'
         diagnostics.append([name,var,reasons[j],int(np.count_nonzero(data.A[:,j])),data.fixed[j],values[j],values[j]*3600,count,lo,hi,note])
     samples=[['A_result原始行号','实际工时(小时)','固定工时(小时)','候选预测工时(小时)',
-              '候选误差(预测-实际)','候选相对误差','最终结果能否计算本行','验收后预测工时(小时)',
+              '候选误差(预测-实际)','候选相对误差','输出数值能否试算本行','输出数值试算工时(小时)',
               '留出验证候选工时(小时)','留出验证候选误差','验证说明','异常说明']]
     computable=~np.any(data.A[:,~accepted]!=0,axis=1)
     if not fit.ok or MODE=='3.2':computable[:]=False
@@ -633,19 +638,20 @@ def build_reports(data,run_id):
         if fixed_hours[i]>data.b[i]+STRICT_ATOL:warnings.append('固定工时超过实际，未截断/未删除')
         if not np.any(data.A[i]) and data.b[i]>0:warnings.append('模块全零但总工时大于0')
         if np.any(data.A[i]) and data.b[i]==0:warnings.append('有业务但总工时为0')
+        if np.any(data.A[i,estimated]!=0):warnings.append('使用待复核估计值，试算工时不代表模块实测结果')
         if not computable[i]:warnings.append('含未接受模块或任务未通过，候选误差不代表可用结果')
         samples.append([line,data.b[i],fixed_hours[i],p,e,e/data.b[i] if data.b[i]>0 else None,
                         '是' if computable[i] else '否',verified[i] if computable[i] else None,
                         val_total[i],val_total[i]-data.b[i],vnotes[i],'；'.join(warnings)])
     summary=[['项目','内容'],['运行标识',run_id],['模式',MODE+' '+MODE_NAMES[MODE]],['状态',status],
              ['求解器验收',fit.ok],['求解说明',fit.message],['迭代次数',fit.iterations],['最优性指标',fit.optimality],
-             ['当前有业务模块是否全部通过验收',complete],['结果单位','C列小时/件；D列=C列×3600，单位秒/件；错误候选值仅在解释报告展示'],
+             ['当前有业务模块是否均有可试算数值',complete],['当前有业务模块是否均可独立确定',bool(complete and not estimated.any())],['结果单位','C列小时/件；D列=C列×3600，单位秒/件；错误候选值仅在解释报告展示'],
              ['验收下限(秒)',MIN_RESULT_SECONDS],['下限用途','仅验收未知模块；不参与优化，不修改固定值'],
              ['总工时不同取值数',hours_unique],['总工时最小值(小时)',float(np.min(data.b))],
              ['总工时最大值(小时)',float(np.max(data.b))],
              ['工时口径提示','全部工时相同：请核实出勤工时与实际业务作业工时；常数预测可获得零误差，不能据此验证单位工时' if hours_unique==1 else '请确保工时与业务量属于同一天、同一业务范围'],
              ['样本数',len(y)],['模块数',len(known)],['固定模块数',int(known.sum())],['待求模块数',int(active.sum())],
-             ['合格求解模块数',int((active&accepted).sum())],['未通过待求模块数',int(rejected.sum())],
+             ['可独立确定模块数',int(identified.sum())],['估计值待复核模块数',int(estimated.sum())],['未通过待求模块数',int(rejected.sum())],
              ['无业务未知模块(*)',int((~active&~known).sum())],['无法独立确定数',int(ambiguous.sum())],
              ['数值秩',rank],['非零奇异值条件数',condition],
              ['可识别性说明','仅依据当前业务矩阵与数值容差；正则/先验不能替代缺失信息，不保证业务准确'],
@@ -654,7 +660,7 @@ def build_reports(data,run_id):
              ['验证限制','随机留出不等于未来验证；网络用同一验证集选轮数，不能作为独立测试集']]
     summary += [['原因统计（可重叠） '+k,v] for k,v in acceptance_counts(values,active,ambiguous,fit)]
     summary += [['全量候选 '+k,v] for k,v in metrics(data.b,prediction)]
-    summary += [['验收后 '+k,v] for k,v in metrics(data.b,np.where(computable,verified,np.nan))]
+    summary += [['输出数值试算 '+k,v] for k,v in metrics(data.b,np.where(computable,verified,np.nan))]
     summary += validation + [['留出候选 '+k,v] for k,v in metrics(data.b,val_total)]
     if MODE=='2.1':
         summary += [['先验中位数(秒/件)',PRIOR_HOURS*3600],['MAP说明','正数估计受配置先验影响；通过0.5秒门槛不等于实际测得的标准工时']]
@@ -665,12 +671,13 @@ def build_reports(data,run_id):
     detail=[['类型','位置','行号','说明','原始值']]
     if hours_unique==1:detail.append(['数据提示','总工时','','全部样本总工时相同；需核实实际作业工时口径',float(data.b[0])])
     if not fit.ok:detail.append(['求解','全量','','求解未通过',fit.message])
+    for j in np.flatnonzero(estimated):detail.append(['待复核估计',data.modules[j][1],'',reasons[j],values[j]])
     for j in np.flatnonzero(rejected):detail.append(['模块',data.modules[j][1],'',reasons[j],values[j]])
     for i in np.flatnonzero(fixed_hours>data.b+STRICT_ATOL):detail.append(['样本','A_result',data.lines[i],'固定工时超过实际工时',float(fixed_hours[i]-data.b[i])])
     help_rows=[['现象','处理建议'],
                ['数值求解未通过','查看求解说明和最优性指标；严格方程不可行时不能靠增加迭代次数解决，可选择近似模式评估'],
                ['低于0.5秒','核对数量单位和实际作业工时；通过现场测时补充固定值，不强行抬高候选值'],
-               ['无法独立确定','补充模块独立出现的样本，或固定其中部分模块后重算'],
+               ['无法独立确定','数值已作为待复核估计输出；补充独立样本或实测固定值后重算，不能仅凭拟合误差确认单模块工时'],
                ['总工时始终相同','核实是否使用了固定出勤工时；如包含等待、辅助工作或非同日业务，应补充对应记录，而不是凭空调整工时'],
                ['模式2.1通过更多模块','结果受先验影响，需以独立测时核实；通过率不代表准确率'],
                ['模式3.2没有模块取值','该模式仅用于非线性预测，不提供固定单位工时'],
@@ -709,14 +716,16 @@ def write_book(path,sheets,known,run_id):
             s.row_dimensions[1].height=32;s.auto_filter.ref=s.dimensions
             for col in range(1,s.max_column+1):s.column_dimensions[get_column_letter(col)].width=24
             if title=='模块信息':
-                s.column_dimensions['A'].width=36;s.column_dimensions['B'].width=14;s.column_dimensions['C'].width=52;s.column_dimensions['D'].width=24
+                s.column_dimensions['A'].width=36;s.column_dimensions['B'].width=14;s.column_dimensions['C'].width=52;s.column_dimensions['D'].width=24;s.column_dimensions['E'].width=60
                 for j,row in enumerate(s.iter_rows(min_row=2)):
                     fixed=j<len(known) and known[j];cell=row[2]
-                    color=GREEN if fixed else BLUE if isinstance(cell.value,(int,float)) else RED
+                    is_estimate=len(row)>4 and '估计值' in str(row[4].value)
+                    color=GREEN if fixed else 'FFF2CC' if is_estimate else BLUE if isinstance(cell.value,(int,float)) else RED
                     cell.fill=PatternFill('solid',fgColor=color)
                     cell.number_format='0.000000E+00' if isinstance(cell.value,(int,float)) and 0<abs(cell.value)<1e-9 else '0.000000000'
                     if len(row)>3:
                         row[3].fill=PatternFill('solid',fgColor=color);row[3].number_format='0.000000'
+                    if len(row)>4:row[4].fill=PatternFill('solid',fgColor=color)
                     s.row_dimensions[j+2].height=32
             elif title=='求解总览':
                 s.column_dimensions['A'].width=36;s.column_dimensions['B'].width=110
@@ -727,7 +736,8 @@ def write_book(path,sheets,known,run_id):
                 s.column_dimensions['A'].width=36;s.column_dimensions['C'].width=55;s.column_dimensions['K'].width=48
                 for row in s.iter_rows(min_row=2):
                     for i in (4,5,8,9):row[i].number_format='0.000000E+00'
-                    if any(k in str(row[2].value) for k in ('错误','未通过','无法','不足','无业务','不适用')):row[2].fill=PatternFill('solid',fgColor=RED)
+                    if '估计值' in str(row[2].value):row[2].fill=PatternFill('solid',fgColor='FFF2CC')
+                    elif any(k in str(row[2].value) for k in ('错误','未通过','无法','不足','无业务','不适用')):row[2].fill=PatternFill('solid',fgColor=RED)
             elif title=='样本拟合':
                 s.column_dimensions['K'].width=48;s.column_dimensions['L'].width=65
                 for row in s.iter_rows(min_row=2):row[5].number_format='0.00%'
@@ -790,11 +800,11 @@ def main():
         modules=e.modules if isinstance(e,InputError) else data.modules if data is not None else []
         fixed=e.fixed if isinstance(e,InputError) else data.fixed if data is not None else None
         known=np.isfinite(fixed) if fixed is not None else np.zeros(len(modules),dtype=bool)
-        rows=[['备件模块','自变量','求解值（小时/件）','换算值（秒/件）']]
+        rows=[['备件模块','自变量','求解值（小时/件）','换算值（秒/件）','结果状态']]
         for i,(name,var) in enumerate(modules):
             value=float(fixed[i]) if known[i] else '运行失败：详见解释报告'
-            rows.append([name,var,value,seconds_cell(value)])
-        if not modules:rows.append(['无法读取模块','','运行失败：详见解释报告','未通过'])
+            rows.append([name,var,value,seconds_cell(value),'固定值，未调整' if known[i] else '运行失败'])
+        if not modules:rows.append(['无法读取模块','','运行失败：详见解释报告','未通过','运行失败'])
         result=[('模块信息',rows)];explain=[('求解总览',[['项目','内容'],['运行标识',run_id],['状态','输入/运行失败'],['说明',str(e)]]),
                                         ('异常记录',[['类型','位置','行号','说明','原始值']]+issues)]
         code=2;status='输入/运行失败';log(f'[失败] {e}；详细记录将写入解释报告')
